@@ -1,0 +1,108 @@
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  AZURE_RM_SVC_CONNECTION: $(AZURE_RM_SVC_CONNECTION)
+  azure-resource-connection: $(azure-resource-connection)
+  BASE_NAME: $(BASE_NAME)
+  LOCATION: $(LOCATION)
+  RESOURCE_GROUP: $(RESOURCE_GROUP)
+  WORKSPACE_NAME: $(WORKSPACE_NAME)
+  WORKSPACE_SVC_CONNECTION: $(WORKSPACE_SVC_CONNECTION)
+
+jobs:
+- job: MLModelTrainingAndDeployment
+  displayName: 'Train and Deploy ML Model'
+  pool:
+    vmImage: 'ubuntu-latest'
+  
+  steps:
+  - task: AzureCLI@2
+    displayName: 'Login to Azure'
+    inputs:
+      azureSubscription: $(AZURE_RM_SVC_CONNECTION)
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        echo "Logging into Azure..."
+        az account set --subscription $(AZURE_RM_SVC_CONNECTION)
+
+  - task: AzureCLI@2
+    displayName: 'Create AML Workspace if Not Exists'
+    inputs:
+      azureSubscription: $(AZURE_RM_SVC_CONNECTION)
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        echo "Checking if AML workspace exists..."
+        az ml workspace show --name $(WORKSPACE_NAME) --resource-group $(RESOURCE_GROUP) || \
+        az ml workspace create --name $(WORKSPACE_NAME) --resource-group $(RESOURCE_GROUP) --location $(LOCATION)
+
+  - task: PythonScript@0
+    displayName: 'Train Model using scikit-learn'
+    inputs:
+      scriptSource: 'inline'
+      pythonInterpreter: 'python3'
+      script: |
+        import joblib
+        from sklearn import datasets
+        from sklearn.model_selection import train_test_split
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.metrics import accuracy_score
+
+        # Load dataset
+        data = datasets.load_iris()
+        X = data.data
+        y = data.target
+
+        # Train/test split
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        # Train model
+        model = RandomForestClassifier(n_estimators=100)
+        model.fit(X_train, y_train)
+
+        # Test the model
+        y_pred = model.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+        print(f'Model Accuracy: {accuracy}')
+
+        # Save model
+        model_filename = 'iris_model.pkl'
+        joblib.dump(model, model_filename)
+        
+        # Save model to Azure Blob Storage or Model Registry
+        print(f'Model saved to {model_filename}')
+
+  - task: AzureCLI@2
+    displayName: 'Register Model with AML'
+    inputs:
+      azureSubscription: $(AZURE_RM_SVC_CONNECTION)
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        echo "Registering model with AML..."
+        az ml model register --name $(BASE_NAME)_iris_model --model-path iris_model.pkl --workspace-name $(WORKSPACE_NAME) --resource-group $(RESOURCE_GROUP)
+        
+  - task: AzureCLI@2
+    displayName: 'Deploy Model as Web Service'
+    inputs:
+      azureSubscription: $(AZURE_RM_SVC_CONNECTION)
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        echo "Deploying model as a web service..."
+        az ml model deploy --name $(BASE_NAME)_iris_model_deployment --model $(BASE_NAME)_iris_model:1 --workspace-name $(WORKSPACE_NAME) --resource-group $(RESOURCE_GROUP) --image-config-file deployment_config.yml --auth-mode key
+
+  - task: AzureCLI@2
+    displayName: 'Test Deployed Model'
+    inputs:
+      azureSubscription: $(AZURE_RM_SVC_CONNECTION)
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        echo "Testing the deployed model..."
+        response=$(curl -X POST -H "Content-Type: application/json" -d '{"data": [[5.1, 3.5, 1.4, 0.2]]}' http://<model-endpoint>/score)
+        echo "Response: $response"

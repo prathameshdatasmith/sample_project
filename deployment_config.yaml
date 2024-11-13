@@ -1,0 +1,8 @@
+$schema: https://azuremlschemas.azureedge.net/deployment/2022-04-01/deployment.schema.json
+image:
+  name: $(BASE_NAME)_iris_model_image
+compute: ACI
+instance_count: 1
+cpu_cores: 1
+memory_gb: 1
+auth_mode: key
